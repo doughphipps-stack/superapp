@@ -1,0 +1,594 @@
+import { useState, useEffect, useRef } from "react";
+
+//  Helpers 
+const today = () => new Date().toISOString().slice(0, 10);
+const fmt = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const fmtShort = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+function daysDiff(dateStr) {
+  const t = new Date(); t.setHours(0,0,0,0);
+  const d = new Date(dateStr + "T00:00:00");
+  return Math.floor((t - d) / 86400000);
+}
+
+function parseDue(val) {
+  const v = val.trim().toLowerCase();
+  if (!v || v === "daily") return null;
+  const now = new Date(); now.setHours(0,0,0,0);
+  if (v === "today") return now.toISOString().slice(0,10);
+  if (v === "tomorrow") { const d = new Date(now); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
+  if (v === "weekly") { const d = new Date(now); d.setDate(d.getDate()+7); return d.toISOString().slice(0,10); }
+  if (v === "monthly") { const d = new Date(now); d.setMonth(d.getMonth()+1); return d.toISOString().slice(0,10); }
+  const days = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
+  const dayIdx = days.indexOf(v);
+  if (dayIdx !== -1) {
+    const d = new Date(now);
+    const diff = (dayIdx - d.getDay() + 7) % 7 || 7;
+    d.setDate(d.getDate() + diff);
+    return d.toISOString().slice(0,10);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(v)) {
+    const parts = v.split("/");
+    const yr = parts[2] ? (parts[2].length===2?"20"+parts[2]:parts[2]) : new Date().getFullYear();
+    return `${yr}-${parts[0].padStart(2,"0")}-${parts[1].padStart(2,"0")}`;
+  }
+  return null;
+}
+
+function useLocalStorage(key, init) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : init; } catch { return init; }
+  });
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }, [key, val]);
+  return [val, setVal];
+}
+
+//  Palette 
+const C = {
+  bg: "#0f1117",
+  surface: "#1a1d27",
+  surfaceHigh: "#222538",
+  border: "#2e3148",
+  accent: "#6c63ff",
+  accentSoft: "#6c63ff22",
+  accentHover: "#7c73ff",
+  green: "#22c55e",
+  red: "#ef4444",
+  amber: "#f59e0b",
+  text: "#e8e9f0",
+  muted: "#8b8fa8",
+  card: "#1e2132",
+};
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Lato:wght@300;400;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: ${C.bg}; color: ${C.text}; font-family: 'Lato', sans-serif; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
+  input, textarea, select { background: ${C.surfaceHigh}; border: 1px solid ${C.border}; color: ${C.text}; border-radius: 8px; padding: 8px 12px; font-family: inherit; font-size: 14px; outline: none; transition: border .2s; }
+  input:focus, textarea:focus, select:focus { border-color: ${C.accent}; }
+  button { cursor: pointer; font-family: inherit; border: none; }
+  .app { display: flex; height: 100vh; overflow: hidden; }
+  .sidebar { width: 200px; min-width: 200px; background: ${C.surface}; border-right: 1px solid ${C.border}; display: flex; flex-direction: column; padding: 20px 0; }
+  .sidebar-logo { padding: 0 20px 24px; font-family: 'Nunito', sans-serif; font-size: 18px; font-weight: 800; color: ${C.text}; letter-spacing: -.3px; }
+  .sidebar-logo span { color: ${C.accent}; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 11px 20px; font-size: 14px; font-weight: 500; color: ${C.muted}; cursor: pointer; transition: all .15s; border-left: 2px solid transparent; }
+  .nav-item:hover { color: ${C.text}; background: ${C.surfaceHigh}; }
+  .nav-item.active { color: ${C.text}; background: ${C.accentSoft}; border-left-color: ${C.accent}; }
+  .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+  .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+  .page { flex: 1; overflow-y: auto; padding: 28px 32px; }
+  .page-title { font-family: 'Nunito', sans-serif; font-size: 24px; font-weight: 800; margin-bottom: 24px; }
+  .btn { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 600; transition: all .15s; }
+  .btn-primary { background: ${C.accent}; color: #fff; }
+  .btn-primary:hover { background: ${C.accentHover}; }
+  .btn-ghost { background: transparent; color: ${C.muted}; border: 1px solid ${C.border}; }
+  .btn-ghost:hover { color: ${C.text}; border-color: ${C.accent}; }
+  .card { background: ${C.card}; border: 1px solid ${C.border}; border-radius: 12px; padding: 16px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .tag-green { background: #22c55e22; color: ${C.green}; }
+  .tag-red { background: #ef444422; color: ${C.red}; }
+  .tag-amber { background: #f59e0b22; color: ${C.amber}; }
+  .tag-purple { background: ${C.accentSoft}; color: ${C.accent}; }
+`;
+
+//  TODO 
+const TODO_COLS = [
+  { id: "habits", label: "Daily Habits", icon: "" },
+  { id: "personal", label: "Personal", icon: "" },
+  { id: "urgent", label: "Work: Signal - Must Get Done Today", icon: "" },
+  { id: "priority", label: "Work: Noise - Delegate, De-prioritize, or Do Later", icon: "" },
+  { id: "longterm", label: "Work Long-Term", icon: "" },
+];
+
+function TaskCard({ task, onToggle, onDelete }) {
+  const diff = task.due ? daysDiff(task.due) : null;
+  const isToday = diff === 0;
+  const isOverdue = diff !== null && diff > 0 && !task.done;
+  const dueLabelColor = isOverdue ? C.red : isToday ? C.green : C.muted;
+
+  function dueLabel() {
+    if (!task.due) return task.cadence === "daily" ? "Daily" : null;
+    if (isToday) return "Today";
+    if (diff === 1) return "Yesterday";
+    if (isOverdue) return fmtShort(task.due);
+    return fmtShort(task.due);
+  }
+
+  return (
+    <div style={{
+      background: C.surfaceHigh,
+      border: `1px solid ${isOverdue ? C.red+"44" : isToday ? C.green+"44" : task.done ? C.border+"44" : C.border}`,
+      borderRadius: 10, padding: "12px 14px", marginBottom: 8,
+      opacity: task.done ? .5 : 1, transition: "opacity .2s",
+    }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div onClick={() => onToggle(task.id)} style={{
+          width: 18, height: 18, borderRadius: 5,
+          border: `2px solid ${task.done ? C.accent : C.border}`,
+          background: task.done ? C.accent : "transparent",
+          flexShrink: 0, marginTop: 2, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 11, color: "#fff", transition: "all .15s",
+        }}>{task.done ? "✓" : ""}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, textDecoration: task.done ? "line-through" : "none", color: task.done ? C.muted : C.text, wordBreak: "break-word" }}>
+            {task.text}
+          </div>
+          {dueLabel() && (
+            <div style={{ fontSize: 11, fontWeight: isOverdue || isToday ? 600 : 400, color: dueLabelColor, marginTop: 3 }}>
+              {isOverdue ? `Overdue — ${dueLabel()}` : dueLabel()}
+            </div>
+          )}
+        </div>
+        <button onClick={() => onDelete(task.id)} style={{ background: "none", color: C.muted, fontSize: 14, padding: "0 4px", flexShrink: 0 }}>×</button>
+      </div>
+    </div>
+  );
+}
+
+const SCHEDULE_KEYWORDS = ["today","tomorrow","daily","weekly","monthly","sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
+
+function extractSchedule(raw) {
+  const parts = raw.trim().split(/\s+/);
+  if (parts.length < 2) return { taskText: raw.trim(), whenWord: "" };
+  const last = parts[parts.length - 1].toLowerCase();
+  // check for date like 6/30 or 2025-06-30
+  const isDate = /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(last) || /^\d{4}-\d{2}-\d{2}$/.test(last);
+  if (SCHEDULE_KEYWORDS.includes(last) || isDate) {
+    return { taskText: parts.slice(0, -1).join(" "), whenWord: last };
+  }
+  return { taskText: raw.trim(), whenWord: "" };
+}
+
+function AddTaskInput({ colId, onAdd }) {
+  const [text, setText] = useState("");
+  const [expanded, setExpanded] = useState(false);
+
+  const { taskText, whenWord } = extractSchedule(text);
+  const parsedDue = whenWord ? parseDue(whenWord) : null;
+  const isTomorrow = whenWord === "tomorrow";
+  const isScheduled = !!whenWord && whenWord !== "daily";
+
+  const chipColor = isTomorrow ? "#f97316" : C.green;
+
+  function submit() {
+    if (!taskText.trim()) return;
+    const due = parseDue(whenWord);
+    const cadence = whenWord || "daily";
+    onAdd({ id: Date.now() + Math.random(), text: taskText.trim(), cadence, due, done: false, created: today(), col: colId });
+    setText(""); setExpanded(false);
+  }
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      {!expanded ? (
+        <button onClick={() => setExpanded(true)} style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: 13, textAlign: "left", cursor: "pointer" }}>
+          + Add new task
+        </button>
+      ) : (
+        <div style={{ background: C.surfaceHigh, border: `1px solid ${C.accent}`, borderRadius: 10, padding: 12 }}>
+          <input
+            value={text}
+            onChange={e => setText(e.target.value)}
+            placeholder="Task name… end with: today · tomorrow · monday · 6/30"
+            style={{ width: "100%", marginBottom: isScheduled ? 6 : 10 }}
+            onKeyDown={e => e.key === "Enter" && submit()}
+            autoFocus
+          />
+          {isScheduled && (
+            <div style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 20, background: chipColor + "22", border: `1px solid ${chipColor}55` }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: chipColor }} />
+                <span style={{ fontSize: 11, fontWeight: 600, color: chipColor }}>
+                  {whenWord.charAt(0).toUpperCase() + whenWord.slice(1)}{parsedDue ? ` — ${fmtShort(parsedDue)}` : ""}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: C.muted }}>"{taskText}"</span>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" style={{ flex: 1, padding: "7px 0" }} onClick={submit}>Add</button>
+            <button className="btn btn-ghost" style={{ padding: "7px 14px" }} onClick={() => { setExpanded(false); setText(""); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TodoPage({ tasks, setTasks }) {
+  function addTask(task) { setTasks(t => [...t, task]); }
+  function toggleTask(id) { setTasks(t => t.map(x => x.id === id ? { ...x, done: !x.done } : x)); }
+  function deleteTask(id) { setTasks(t => t.filter(x => x.id !== id)); }
+
+  return ( <div> <div className="page-title">To Do</div> <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 16, height: "calc(100vh - 120px)", overflowX: "auto" }}> {TODO_COLS.map(col => {
+          const colTasks = tasks.filter(t => t.col === col.id);
+          const done = colTasks.filter(t => t.done).length;
+          return ( <div key={col.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{col.label}</span>
+                <span style={{ fontSize: 11, color: C.muted }}>{done}/{colTasks.length}</span>
+              </div>
+              <AddTaskInput colId={col.id} onAdd={addTask} />
+              <div style={{ flex: 1, overflowY: "auto", paddingRight: 2 }}>
+                {colTasks.sort((a,b) => (a.done===b.done?0:a.done?1:-1)).map(t => (
+                  <TaskCard key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask} />
+                ))}
+              </div>
+            </div> );
+        })} </div> </div> );
+}
+
+//  CALENDAR
+function CalendarPage() {
+  const [clientId, setClientId] = useState(() => localStorage.getItem("gcal_client_id") || "");
+  const [inputId, setInputId] = useState("");
+  const [events, setEvents] = useState([]);
+  const [status, setStatus] = useState("idle"); // idle | connecting | connected | error
+  const [errorMsg, setErrorMsg] = useState("");
+
+  function loadGapi(id) {
+    return new Promise((resolve, reject) => {
+      if (window.gapi) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = "https://apis.google.com/js/api.js";
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  async function connect() {
+    const id = inputId.trim();
+    if (!id) return;
+    setStatus("connecting"); setErrorMsg("");
+    try {
+      await loadGapi(id);
+      await new Promise((res, rej) => window.gapi.load("client:auth2", { callback: res, onerror: rej }));
+      await window.gapi.client.init({
+        clientId: id,
+        scope: "https://www.googleapis.com/auth/calendar.readonly",
+        discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"],
+      });
+      const auth = window.gapi.auth2.getAuthInstance();
+      if (!auth.isSignedIn.get()) await auth.signIn();
+      localStorage.setItem("gcal_client_id", id);
+      setClientId(id);
+      setStatus("connected");
+      await fetchEvents();
+    } catch(e) {
+      setStatus("error");
+      setErrorMsg(e?.error === "popup_blocked_by_browser"
+        ? "Popup was blocked — allow popups for this site and try again."
+        : e?.error === "access_denied"
+        ? "Access denied. Make sure this URL is listed under Authorized JavaScript origins in your Google Cloud Console."
+        : e?.details || e?.message || "Connection failed. Check your Client ID and try again.");
+    }
+  }
+
+  async function fetchEvents() {
+    try {
+      const now = new Date();
+      const end = new Date(now); end.setDate(end.getDate() + 14);
+      const res = await window.gapi.client.calendar.events.list({
+        calendarId: "primary",
+        timeMin: now.toISOString(),
+        timeMax: end.toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 30,
+      });
+      setEvents(res.result.items || []);
+    } catch(e) { console.error(e); }
+  }
+
+  function formatEventTime(e) {
+    if (e.start.dateTime) {
+      return new Date(e.start.dateTime).toLocaleString("en-US", { weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit" });
+    }
+    return new Date(e.start.date + "T00:00:00").toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" }) + " (all day)";
+  }
+
+  if (status === "connected" || clientId) {
+    return (
+      <div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 24 }}>
+          <div className="page-title" style={{ marginBottom: 0 }}>Calendar</div>
+          <div style={{ display:"flex", gap: 10 }}>
+            <button className="btn btn-ghost" onClick={fetchEvents}>Refresh</button>
+            <button className="btn btn-ghost" style={{ color: C.red }} onClick={() => { localStorage.removeItem("gcal_client_id"); setClientId(""); setStatus("idle"); setEvents([]); }}>Disconnect</button>
+          </div>
+        </div>
+        {events.length === 0 ? (
+          <div className="card" style={{ textAlign:"center", padding: 40, color: C.muted }}>
+            No upcoming events in the next 14 days.<br />
+            <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={fetchEvents}>Refresh</button>
+          </div>
+        ) : (
+          <div style={{ display:"grid", gap: 10 }}>
+            {events.map(e => (
+              <div key={e.id} className="card" style={{ display:"flex", gap: 16, alignItems:"flex-start" }}>
+                <div style={{ minWidth: 4, alignSelf:"stretch", borderRadius: 4, background: e.colorId ? "#888" : C.accent }} />
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{e.summary}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{formatEventTime(e)}</div>
+                  {e.location && <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{e.location}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="page-title">Calendar</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
+        <div className="card" style={{ borderColor: C.accent + "55" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Connect Google Calendar</div>
+          <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>
+            Set up Google Calendar API access:
+          </p>
+          <ol style={{ color: C.muted, fontSize: 13, lineHeight: 2.2, paddingLeft: 18 }}>
+            <li>Go to <span style={{ color: C.accent }}>console.cloud.google.com</span></li>
+            <li>Create a project → Enable <strong style={{ color: C.text }}>Google Calendar API</strong></li>
+            <li>Credentials → <strong style={{ color: C.text }}>OAuth 2.0 Client ID</strong> → Web application</li>
+            <li>Add this page's URL under <strong style={{ color: C.text }}>Authorized JavaScript origins</strong></li>
+            <li>Copy your Client ID and paste it below</li>
+          </ol>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Paste your Client ID</div>
+          <input
+            value={inputId}
+            onChange={e => setInputId(e.target.value)}
+            placeholder="xxxxxxxxx.apps.googleusercontent.com"
+            style={{ width: "100%", marginBottom: 10, fontFamily: "monospace", fontSize: 12 }}
+          />
+          <button className="btn btn-primary" style={{ width: "100%" }} onClick={connect} disabled={status === "connecting"}>
+            {status === "connecting" ? "Connecting…" : "Connect Google Calendar"}
+          </button>
+          {status === "error" && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: "#ef444422", border: `1px solid ${C.red}44`, borderRadius: 8, fontSize: 12, color: C.red, lineHeight: 1.6 }}>
+              {errorMsg}
+            </div>
+          )}
+          <div style={{ marginTop: 14, fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+            Your credentials stay in your browser only. Make sure the URL you're viewing this on is added as an Authorized JavaScript origin in Google Cloud Console.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+//  NUTRITION 
+function NutritionPage({ entries, setEntries }) {
+  const [selectedDate, setSelectedDate] = useState(today());
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ type: "food", name: "", calories: "", carbs: "", protein: "", fat: "", caffeine: "", alcohol: "" });
+
+  const dayEntries = entries.filter(e => e.date === selectedDate);
+  const totals = entries.filter(e => e.date === selectedDate).reduce((acc, e) => ({
+    calories: acc.calories + (+e.calories || 0),
+    carbs: acc.carbs + (+e.carbs || 0),
+    protein: acc.protein + (+e.protein || 0),
+    fat: acc.fat + (+e.fat || 0),
+    caffeine: acc.caffeine + (+e.caffeine || 0),
+    alcohol: acc.alcohol + (+e.alcohol || 0),
+  }), { calories: 0, carbs: 0, protein: 0, fat: 0, caffeine: 0, alcohol: 0 });
+
+  function addEntry() {
+    if (!form.name) return;
+    setEntries(e => [...e, { ...form, id: Date.now(), date: selectedDate }]);
+    setForm({ type: "food", name: "", calories: "", carbs: "", protein: "", fat: "", caffeine: "", alcohol: "" });
+    setShowAdd(false);
+  }
+
+  const macroBar = (label, val, max, color) => ( <div style={{ marginBottom: 8 }}> <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}> <span style={{ color: C.muted }}>{label}</span> <span style={{ fontWeight: 600 }}>{Math.round(val)}{label === "Calories" ? "" : "g"}</span> </div> <div style={{ height: 6, borderRadius: 3, background: C.border }}> <div style={{ height: "100%", borderRadius: 3, background: color, width: `${Math.min(100, (val/max)*100)}%`, transition: "width .4s" }} /> </div> </div> );
+
+  return ( <div> <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}> <div className="page-title" style={{ marginBottom: 0 }}>Nutrition</div> <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ fontSize: 13 }} /> </div> {/* Macro summary */} <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, marginBottom: 24 }}> {[
+          { label: "Calories", val: totals.calories, unit: "kcal", color: C.accent },
+          { label: "Carbs", val: totals.carbs, unit: "g", color: "#f59e0b" },
+          { label: "Protein", val: totals.protein, unit: "g", color: C.green },
+          { label: "Fat", val: totals.fat, unit: "g", color: "#ec4899" },
+          { label: "Caffeine", val: totals.caffeine, unit: "mg", color: "#f97316" },
+          { label: "Alcohol", val: totals.alcohol, unit: "units", color: "#8b5cf6" },
+        ].map(m => ( <div key={m.label} className="card" style={{ textAlign: "center" }}> <div style={{ fontSize: 22, fontWeight: 700, color: m.color }}>{Math.round(m.val)}</div> <div style={{ fontSize: 11, color: C.muted }}>{m.unit}</div> <div style={{ fontSize: 11, fontWeight: 600, marginTop: 2 }}>{m.label}</div> </div> ))} </div> {/* Food log */} <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 20 }}> <div> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: C.text }}> {selectedDate === today() ? "Today's log" : `Log for ${fmt(selectedDate)}`} </div> {dayEntries.length === 0 && ( <div style={{ textAlign: "center", padding: "40px 0", color: C.muted, fontSize: 14 }}> Nothing logged yet. Add your first entry below. </div> )}
+          {dayEntries.map(e => ( <div key={e.id} style={{ background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12 }}> <span style={{ fontSize: 20 }}>{e.type === "drink" ? "" : ""}</span> <div style={{ flex: 1 }}> <div style={{ fontSize: 14, fontWeight: 600 }}>{e.name}</div> <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}> {[e.calories && `${e.calories} kcal`, e.protein && `${e.protein}g protein`, e.carbs && `${e.carbs}g carbs`, e.fat && `${e.fat}g fat`].filter(Boolean).join(" · ")}
+                  {e.caffeine ? ` ·  ${e.caffeine}mg caffeine` : ""}
+                  {e.alcohol ? ` ·  ${e.alcohol} units` : ""} </div> </div> <button onClick={() => setEntries(en => en.filter(x => x.id !== e.id))} style={{ background: "none", color: C.muted, fontSize: 16 }}>×</button> </div> ))}
+
+          {/* Add card */}
+          {!showAdd ? ( <button onClick={() => setShowAdd(true)} style={{ width: "100%", marginTop: 8, padding: "14px", borderRadius: 12, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: 14, cursor: "pointer", textAlign: "center" }}> Add food or drink </button> ) : ( <div className="card" style={{ marginTop: 8, borderColor: C.accent + "55" }}> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Log an entry</div> <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}> <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}> <option value="food"> Food</option> <option value="drink"> Drink</option> </select> <input placeholder="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /> <input placeholder="Calories" type="number" value={form.calories} onChange={e => setForm(f => ({ ...f, calories: e.target.value }))} /> <input placeholder="Carbs (g)" type="number" value={form.carbs} onChange={e => setForm(f => ({ ...f, carbs: e.target.value }))} /> <input placeholder="Protein (g)" type="number" value={form.protein} onChange={e => setForm(f => ({ ...f, protein: e.target.value }))} /> <input placeholder="Fat (g)" type="number" value={form.fat} onChange={e => setForm(f => ({ ...f, fat: e.target.value }))} /> {form.type === "drink" && <> <input placeholder="Caffeine (mg)" type="number" value={form.caffeine} onChange={e => setForm(f => ({ ...f, caffeine: e.target.value }))} /> <input placeholder="Alcohol (units)" type="number" value={form.alcohol} onChange={e => setForm(f => ({ ...f, alcohol: e.target.value }))} /> </>} </div> <div style={{ display: "flex", gap: 8 }}> <button className="btn btn-primary" style={{ flex: 1 }} onClick={addEntry}>Log it</button> <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>Cancel</button> </div> </div> )} </div> {/* Macro bars */} <div className="card" style={{ height: "fit-content" }}> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Daily targets</div> {macroBar("Calories", totals.calories, 2000, C.accent)}
+          {macroBar("Carbs", totals.carbs, 250, "#f59e0b")}
+          {macroBar("Protein", totals.protein, 150, C.green)}
+          {macroBar("Fat", totals.fat, 65, "#ec4899")} <div style={{ fontSize: 11, color: C.muted, marginTop: 10, textAlign: "right" }}>Edit targets → settings (coming soon)</div> </div> </div> </div> );
+}
+
+//  FITNESS 
+function FitnessPage({ runs, setRuns, lifts, setLifts, weights, setWeights }) {
+  const [tab, setTab] = useState("running");
+  const [runForm, setRunForm] = useState({ date: today(), miles: "", duration: "", type: "easy" });
+  const [liftForm, setLiftForm] = useState({ date: today(), exercise: "", sets: "", reps: "", weight: "", notes: "" });
+  const [weightInput, setWeightInput] = useState("");
+  const [weightRange, setWeightRange] = useState("week");
+
+  // Running stats
+  const avgByType = (type) => {
+    const r = runs.filter(x => x.type === type);
+    if (!r.length) return null;
+    return { miles: (r.reduce((a,b) => a + +b.miles, 0) / r.length).toFixed(1), count: r.length };
+  };
+
+  function addRun() {
+    if (!runForm.miles) return;
+    const pace = runForm.duration && runForm.miles ? (parseFloat(runForm.duration) / parseFloat(runForm.miles)).toFixed(1) : null;
+    setRuns(r => [...r, { ...runForm, id: Date.now(), pace }]);
+    setRunForm(f => ({ ...f, miles: "", duration: "" }));
+  }
+
+  function addLift() {
+    if (!liftForm.exercise) return;
+    setLifts(l => [...l, { ...liftForm, id: Date.now() }]);
+    setLiftForm(f => ({ ...f, exercise: "", sets: "", reps: "", weight: "", notes: "" }));
+  }
+
+  function logWeight() {
+    if (!weightInput) return;
+    setWeights(w => { const next = w.filter(x => x.date !== today()); return [...next, { date: today(), weight: +weightInput }]; });
+    setWeightInput("");
+  }
+
+  // Weight chart
+  const weightData = () => {
+    const now = new Date();
+    let days = 7;
+    if (weightRange === "month") days = 30;
+    if (weightRange === "year") days = 365;
+    const cutoff = new Date(now - days * 86400000).toISOString().slice(0,10);
+    return weights.filter(w => w.date >= cutoff).sort((a,b) => a.date.localeCompare(b.date));
+  };
+
+  const wData = weightData();
+  const wMin = wData.length ? Math.min(...wData.map(x => x.weight)) - 2 : 150;
+  const wMax = wData.length ? Math.max(...wData.map(x => x.weight)) + 2 : 200;
+
+  // Group lifts by exercise
+  const exerciseGroups = {};
+  lifts.forEach(l => {
+    if (!exerciseGroups[l.exercise]) exerciseGroups[l.exercise] = [];
+    exerciseGroups[l.exercise].push(l);
+  });
+
+  return ( <div> <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 24, borderBottom: `1px solid ${C.border}`, paddingBottom: 0 }}> <div className="page-title" style={{ marginBottom: 16, marginRight: 32 }}>Fitness</div> {["running", "lifting", "weight"].map(t => ( <button key={t} onClick={() => setTab(t)} style={{ background: "none", border: "none", borderBottom: `2px solid ${tab===t?C.accent:"transparent"}`, color: tab===t?C.text:C.muted, padding: "10px 20px", fontSize: 14, fontWeight: tab===t?600:400, cursor: "pointer", marginBottom: -1 }}> {t === "running" ? " Running" : t === "lifting" ? " Lifting" : " Weight"} </button> ))} </div> {tab === "running" && ( <div> {/* Stat cards */} <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 24 }}> {["easy","long","speed"].map(type => {
+              const avg = avgByType(type);
+              const emoji = type==="easy"?"":type==="long"?"":"";
+              return ( <div key={type} className="card"> <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>{emoji} {type.charAt(0).toUpperCase()+type.slice(1)} runs</div> {avg ? <> <div style={{ fontSize: 26, fontWeight: 700 }}>{avg.miles} <span style={{ fontSize: 14, color: C.muted, fontWeight: 400 }}>avg mi</span></div> <div style={{ fontSize: 12, color: C.muted }}>{avg.count} logged</div> </> : <div style={{ color: C.muted, fontSize: 13 }}>No {type} runs yet</div>} </div> );
+            })} </div> <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}> {/* Log run */} <div className="card"> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Log a run</div> <div style={{ display: "grid", gap: 10 }}> <input type="date" value={runForm.date} onChange={e => setRunForm(f => ({ ...f, date: e.target.value }))} /> <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}> <input placeholder="Miles (e.g. 4.2)" type="number" step="0.1" value={runForm.miles} onChange={e => setRunForm(f => ({ ...f, miles: e.target.value }))} /> <input placeholder="Duration (min)" type="number" value={runForm.duration} onChange={e => setRunForm(f => ({ ...f, duration: e.target.value }))} /> </div> <select value={runForm.type} onChange={e => setRunForm(f => ({ ...f, type: e.target.value }))}> <option value="easy"> Easy run</option> <option value="long"> Long run</option> <option value="speed"> Speed run</option> </select> <button className="btn btn-primary" onClick={addRun}>Log run</button> </div> </div> {/* Recent runs */} <div className="card"> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Recent runs</div> <div style={{ maxHeight: 240, overflowY: "auto" }}> {[...runs].sort((a,b) => b.date.localeCompare(a.date)).slice(0,15).map(r => ( <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.border}` }}> <div> <span style={{ fontSize: 12, color: C.muted }}>{fmtShort(r.date)}</span> <span className="tag tag-purple" style={{ marginLeft: 8, fontSize: 10 }}>{r.type}</span> </div> <div style={{ textAlign: "right" }}> <div style={{ fontSize: 14, fontWeight: 600 }}>{r.miles} mi</div> {r.duration && <div style={{ fontSize: 11, color: C.muted }}>{r.duration} min{r.pace ? ` · ${r.pace} min/mi` : ""}</div>} </div> </div> ))}
+                {!runs.length && <div style={{ color: C.muted, fontSize: 13, textAlign: "center", padding: 20 }}>No runs logged yet</div>} </div> </div> </div> <div className="card" style={{ marginTop: 20 }}> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}> Training plan advice</div> <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.7 }}> <strong style={{ color: C.text }}>For recreational runners:</strong> The 80/20 rule — 80% easy, 20% hard — is backed by the most research. Aim for 3–4 runs/week: 2 easy runs, 1 long run (longest of the week, building ~10% weekly mileage), and 1 speed session (intervals or tempo). Easy runs should feel conversational. Consider a Garmin or Apple Watch to track heart rate zones automatically. </p> </div> </div> )}
+
+      {tab === "lifting" && ( <div> <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}> <div className="card"> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Log a set</div> <div style={{ display: "grid", gap: 10 }}> <input type="date" value={liftForm.date} onChange={e => setLiftForm(f => ({ ...f, date: e.target.value }))} /> <input placeholder="Exercise (e.g. Bench Press)" value={liftForm.exercise} onChange={e => setLiftForm(f => ({ ...f, exercise: e.target.value }))} /> <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}> <input placeholder="Sets" type="number" value={liftForm.sets} onChange={e => setLiftForm(f => ({ ...f, sets: e.target.value }))} /> <input placeholder="Reps" type="number" value={liftForm.reps} onChange={e => setLiftForm(f => ({ ...f, reps: e.target.value }))} /> <input placeholder="lbs" type="number" value={liftForm.weight} onChange={e => setLiftForm(f => ({ ...f, weight: e.target.value }))} /> </div> <input placeholder="Notes (optional)" value={liftForm.notes} onChange={e => setLiftForm(f => ({ ...f, notes: e.target.value }))} /> <button className="btn btn-primary" onClick={addLift}>Log set</button> </div> </div> <div className="card"> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}> Lifting framework</div> <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.7 }}> For 3–4x/week, <strong style={{ color: C.text }}>Upper/Lower</strong> or <strong style={{ color: C.text }}>Push/Pull/Legs</strong> splits are most effective for tracking progressive overload. Log your sets, reps, and weight each session — when you can do all reps cleanly, add 5 lbs next session. Below, you'll see your max weight for each exercise over time. </p> </div> </div> {/* Progress per exercise */} <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Progress by exercise</div> {Object.keys(exerciseGroups).length === 0 && ( <div className="card" style={{ textAlign: "center", padding: 40, color: C.muted }}>Log your first lift above to see progress here</div> )} <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}> {Object.entries(exerciseGroups).map(([ex, sets]) => {
+              const recent = [...sets].sort((a,b) => b.date.localeCompare(a.date));
+              const maxWeight = Math.max(...sets.map(s => +s.weight || 0));
+              const firstMax = [...sets].sort((a,b) => a.date.localeCompare(b.date)).find(s => +s.weight === maxWeight);
+              const latestMax = recent.find(s => +s.weight === maxWeight);
+              return ( <div key={ex} className="card"> <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{ex}</div> <div style={{ fontSize: 24, fontWeight: 700, color: C.accent }}>{maxWeight}<span style={{ fontSize: 12, color: C.muted, fontWeight: 400 }}> lbs PR</span></div> <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{sets.length} sets logged</div> <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}> Last: {recent[0].sets}×{recent[0].reps} @ {recent[0].weight}lbs ({fmtShort(recent[0].date)}) </div> </div> );
+            })} </div> </div> )}
+
+      {tab === "weight" && ( <div> <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 20 }}> <div> <div className="card" style={{ marginBottom: 16 }}> <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Log today's weight</div> <div style={{ display: "flex", gap: 8, marginBottom: 10 }}> <input placeholder="lbs" type="number" step="0.1" value={weightInput} onChange={e => setWeightInput(e.target.value)} style={{ flex: 1 }}
+                    onKeyDown={e => e.key === "Enter" && logWeight()} /> <button className="btn btn-primary" onClick={logWeight}>Log</button> </div> {weights.find(w => w.date === today()) && ( <div style={{ fontSize: 12, color: C.green }}> Logged today: {weights.find(w => w.date === today()).weight} lbs</div> )} </div> {wData.length > 0 && ( <div className="card"> <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Stats</div> <div style={{ display: "grid", gap: 8 }}> <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}> <span style={{ color: C.muted }}>Current</span> <span style={{ fontWeight: 600 }}>{wData[wData.length-1]?.weight} lbs</span> </div> <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}> <span style={{ color: C.muted }}>Period low</span> <span style={{ fontWeight: 600, color: C.green }}>{Math.min(...wData.map(x=>x.weight))} lbs</span> </div> <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}> <span style={{ color: C.muted }}>Period high</span> <span style={{ fontWeight: 600 }}>{Math.max(...wData.map(x=>x.weight))} lbs</span> </div> <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}> <span style={{ color: C.muted }}>Change</span> <span style={{ fontWeight: 600, color: wData[wData.length-1]?.weight < wData[0]?.weight ? C.green : C.red }}> {wData.length > 1 ? (wData[wData.length-1].weight - wData[0].weight).toFixed(1) : "—"} lbs </span> </div> </div> </div> )} </div> <div className="card"> <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}> <div style={{ fontSize: 14, fontWeight: 700 }}>Weight trend</div> <div style={{ display: "flex", gap: 6 }}> {["week","month","year"].map(r => ( <button key={r} onClick={() => setWeightRange(r)} className="btn" style={{ padding: "5px 12px", fontSize: 12, background: weightRange===r?C.accent:C.surfaceHigh, color: weightRange===r?"#fff":C.muted, border: `1px solid ${weightRange===r?C.accent:C.border}` }}> {r.charAt(0).toUpperCase()+r.slice(1)} </button> ))} </div> </div> {wData.length < 2 ? ( <div style={{ textAlign: "center", padding: "60px 0", color: C.muted, fontSize: 14 }}> Log at least 2 days to see your trend chart </div> ) : ( <svg viewBox={`0 0 600 200`} style={{ width: "100%", height: 200 }}> {/* Grid lines */}
+                  {[0,1,2,3,4].map(i => ( <line key={i} x1={40} y1={10+i*40} x2={590} y2={10+i*40} stroke={C.border} strokeWidth={1} /> ))}
+                  {/* Y labels */}
+                  {[0,1,2,3,4].map(i => {
+                    const w = wMax - (i/(4)) * (wMax - wMin);
+                    return <text key={i} x={35} y={14+i*40} textAnchor="end" fill={C.muted} fontSize={10}>{Math.round(w)}</text> })}
+                  {/* Line */}
+                  {wData.map((pt, i) => {
+                    const x = 50 + (i / Math.max(wData.length-1,1)) * 530;
+                    const y = 10 + ((wMax - pt.weight) / (wMax - wMin)) * 160;
+                    return i === 0 ? null : ( <line key={i}
+                        x1={50 + ((i-1) / Math.max(wData.length-1,1)) * 530}
+                        y1={10 + ((wMax - wData[i-1].weight) / (wMax - wMin)) * 160}
+                        x2={x} y2={y} stroke={C.accent} strokeWidth={2} /> );
+                  })}
+                  {/* Dots */}
+                  {wData.map((pt, i) => {
+                    const x = 50 + (i / Math.max(wData.length-1,1)) * 530;
+                    const y = 10 + ((wMax - pt.weight) / (wMax - wMin)) * 160;
+                    return <circle key={i} cx={x} cy={y} r={4} fill={C.accent} />;
+                  })} </svg> )} </div> </div> </div> )} </div> );
+}
+
+//  READING 
+function ReadingPage({ books, setBooks }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ title: "", author: "", dateFinished: today(), score: "5", review: "" });
+
+  function addBook() {
+    if (!form.title) return;
+    setBooks(b => [{ ...form, id: Date.now() }, ...b]);
+    setForm({ title: "", author: "", dateFinished: today(), score: "5", review: "" });
+    setShowAdd(false);
+  }
+
+  const stars = (n) => "".repeat(+n) + "".repeat(5 - +n);
+
+  return ( <div> <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}> <div className="page-title" style={{ marginBottom: 0 }}>Reading</div> <div style={{ display: "flex", alignItems: "center", gap: 12 }}> <div style={{ fontSize: 13, color: C.muted }}>{books.length} books this year</div> <button className="btn btn-primary" onClick={() => setShowAdd(true)}> Add book</button> </div> </div> {showAdd && ( <div className="card" style={{ marginBottom: 24, borderColor: C.accent + "55" }}> <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Log a book</div> <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 12, marginBottom: 12 }}> <input placeholder="Book title" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} /> <input placeholder="Author" value={form.author} onChange={e => setForm(f => ({ ...f, author: e.target.value }))} /> <input type="date" value={form.dateFinished} onChange={e => setForm(f => ({ ...f, dateFinished: e.target.value }))} /> <select value={form.score} onChange={e => setForm(f => ({ ...f, score: e.target.value }))} style={{ width: 80 }}> {[5,4,3,2,1].map(n => <option key={n} value={n}>{n}/5</option>)} </select> </div> <textarea placeholder="What did you learn or take away from this book?" value={form.review} onChange={e => setForm(f => ({ ...f, review: e.target.value }))} style={{ width: "100%", minHeight: 80, resize: "vertical", marginBottom: 12 }} /> <div style={{ display: "flex", gap: 8 }}> <button className="btn btn-primary" onClick={addBook}>Save book</button> <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>Cancel</button> </div> </div> )}
+
+      {books.length === 0 && ( <div style={{ textAlign: "center", padding: "80px 0", color: C.muted }}> <div style={{ fontSize: 48, marginBottom: 12 }}></div> <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>No books logged yet</div> <div style={{ fontSize: 13 }}>Add your first book above</div> </div> )} <div style={{ display: "grid", gap: 16 }}> {books.map(b => ( <div key={b.id} className="card" style={{ position: "relative" }}> <button onClick={() => setBooks(bs => bs.filter(x => x.id !== b.id))} style={{ position: "absolute", top: 14, right: 14, background: "none", color: C.muted, fontSize: 16 }}>×</button> <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}> <div style={{ width: 50, height: 65, background: `linear-gradient(135deg, ${C.accent}, #8b5cf6)`, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}></div> <div style={{ flex: 1, minWidth: 0 }}> <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}> <div style={{ fontSize: 16, fontWeight: 700 }}>{b.title}</div> {b.author && <div style={{ fontSize: 13, color: C.muted }}>by {b.author}</div>} </div> <div style={{ display: "flex", gap: 12, marginTop: 4, marginBottom: 10, alignItems: "center" }}> <span style={{ color: "#f59e0b", fontSize: 14, letterSpacing: 2 }}>{stars(b.score)}</span> <span style={{ fontSize: 11, color: C.muted }}>Finished {fmt(b.dateFinished)}</span> </div> {b.review && ( <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.7, background: C.surfaceHigh, padding: "10px 14px", borderRadius: 8, borderLeft: `3px solid ${C.accent}` }}> {b.review} </div> )} </div> </div> </div> ))} </div> {!showAdd && books.length > 0 && ( <button onClick={() => setShowAdd(true)} style={{ width: "100%", marginTop: 16, padding: "16px", borderRadius: 12, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: 14, cursor: "pointer", textAlign: "center" }}> Add another book </button> )} </div> );
+}
+
+//  COMEDY 
+function ComedyPage({ bits, setBits }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ title: "", setup: "", punchline: "", notes: "", tags: "", status: "idea" });
+
+  function addBit() {
+    if (!form.title) return;
+    setBits(b => [{ ...form, id: Date.now(), created: today(), tags: form.tags.split(",").map(t=>t.trim()).filter(Boolean) }, ...b]);
+    setForm({ title: "", setup: "", punchline: "", notes: "", tags: "", status: "idea" });
+    setShowAdd(false);
+  }
+
+  const statusColors = { idea: C.muted, "in progress": C.amber, "stage ready": C.green, retired: C.red };
+
+  return ( <div> <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}> <div className="page-title" style={{ marginBottom: 0 }}>Comedy</div> <button className="btn btn-primary" onClick={() => setShowAdd(true)}> New bit</button> </div> {showAdd && ( <div className="card" style={{ marginBottom: 24, borderColor: C.accent + "55" }}> <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 16 }}>Write a new bit</div> <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 10 }}> <input placeholder="Bit title / topic" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} /> <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}> <option value="idea"> Idea</option> <option value="in progress"> In progress</option> <option value="stage ready"> Stage ready</option> <option value="retired"> Retired</option> </select> </div> <textarea placeholder="Setup…" value={form.setup} onChange={e => setForm(f => ({ ...f, setup: e.target.value }))} style={{ width: "100%", minHeight: 64, resize: "vertical", marginBottom: 10 }} /> <textarea placeholder="Punchline…" value={form.punchline} onChange={e => setForm(f => ({ ...f, punchline: e.target.value }))} style={{ width: "100%", minHeight: 48, resize: "vertical", marginBottom: 10 }} /> <textarea placeholder="Notes / alt punchlines / performance notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} style={{ width: "100%", minHeight: 48, resize: "vertical", marginBottom: 10 }} /> <input placeholder="Tags (comma-separated: observational, dark, self-deprecating…)" value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} style={{ width: "100%", marginBottom: 12 }} /> <div style={{ display: "flex", gap: 8 }}> <button className="btn btn-primary" onClick={addBit}>Save bit</button> <button className="btn btn-ghost" onClick={() => setShowAdd(false)}>Cancel</button> </div> </div> )}
+
+      {bits.length === 0 && !showAdd && ( <div style={{ textAlign: "center", padding: "80px 0", color: C.muted }}> <div style={{ fontSize: 48, marginBottom: 12 }}></div> <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Your material lives here</div> <div style={{ fontSize: 13 }}>Start capturing bits, ideas, and setups</div> </div> )} <div style={{ display: "grid", gap: 14 }}> {bits.map(b => ( <div key={b.id} className="card" style={{ borderLeft: `3px solid ${statusColors[b.status] || C.muted}` }}> <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}> <div> <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>{b.title}</div> <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}> <span style={{ fontSize: 11, color: statusColors[b.status] || C.muted, fontWeight: 600, textTransform: "uppercase", letterSpacing: .5 }}> {b.status}</span> {(b.tags || []).map(tag => <span key={tag} className="tag tag-purple" style={{ fontSize: 10 }}>{tag}</span>)} </div> </div> <div style={{ display: "flex", gap: 8, alignItems: "center" }}> <span style={{ fontSize: 11, color: C.muted }}>{fmt(b.created)}</span> <button onClick={() => setBits(bs => bs.filter(x => x.id !== b.id))} style={{ background: "none", color: C.muted, fontSize: 16 }}>×</button> </div> </div> {b.setup && ( <div style={{ marginBottom: 8 }}> <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Setup</div> <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, background: C.surfaceHigh, padding: "8px 12px", borderRadius: 8 }}>{b.setup}</div> </div> )}
+            {b.punchline && ( <div style={{ marginBottom: 8 }}> <div style={{ fontSize: 10, fontWeight: 700, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Punchline</div> <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, background: "#f59e0b11", border: `1px solid #f59e0b33`, padding: "8px 12px", borderRadius: 8 }}>{b.punchline}</div> </div> )}
+            {b.notes && ( <div> <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Notes</div> <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{b.notes}</div> </div> )} </div> ))} </div> </div> );
+}
+
+//  ROOT APP 
+const TABS = [
+  { id: "todo", label: "To Do", icon: "" },
+  { id: "calendar", label: "Calendar", icon: "" },
+  { id: "nutrition", label: "Nutrition", icon: "" },
+  { id: "fitness", label: "Fitness", icon: "" },
+  { id: "reading", label: "Reading", icon: "" },
+  { id: "comedy", label: "Comedy", icon: "" },
+];
+
+export default function App() {
+  const [tab, setTab] = useState("todo");
+  const [tasks, setTasks] = useLocalStorage("lt_tasks", []);
+  const [nutrition, setNutrition] = useLocalStorage("lt_nutrition", []);
+  const [runs, setRuns] = useLocalStorage("lt_runs", []);
+  const [lifts, setLifts] = useLocalStorage("lt_lifts", []);
+  const [weights, setWeights] = useLocalStorage("lt_weights", []);
+  const [books, setBooks] = useLocalStorage("lt_books", []);
+  const [bits, setBits] = useLocalStorage("lt_bits", []);
+
+  return ( <> <style>{css}</style> <div className="app"> <nav className="sidebar"> <div className="sidebar-logo">life<span>.</span>track</div> {TABS.map(t => ( <div key={t.id} className={`nav-item ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>  {t.label} </div> ))} </nav> <main className="main"> <div className="page"> {tab === "todo" && <TodoPage tasks={tasks} setTasks={setTasks} />}
+            {tab === "calendar" && <CalendarPage />}
+            {tab === "nutrition" && <NutritionPage entries={nutrition} setEntries={setNutrition} />}
+            {tab === "fitness" && <FitnessPage runs={runs} setRuns={setRuns} lifts={lifts} setLifts={setLifts} weights={weights} setWeights={setWeights} />}
+            {tab === "reading" && <ReadingPage books={books} setBooks={setBooks} />}
+            {tab === "comedy" && <ComedyPage bits={bits} setBits={setBits} />} </div> </main> </div> </> );
+}
